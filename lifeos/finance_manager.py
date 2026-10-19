@@ -22,6 +22,7 @@ from lifeos.config import (
     TOTAL_CREDIT_DEBT,
     CreditCard,
 )
+from lifeos.dynamic_config import DynamicConfigManager, dynamic_config
 
 
 @dataclass
@@ -38,11 +39,29 @@ class FinanceManager:
     Financial governor for LifeOS-ML.
     Synchronizes biweekly payroll with credit card deadlines and strictly enforces
     zero interest charges and discretionary spend caps.
+    Supports real-time dynamic configuration synchronized with Google Sheets.
     """
 
-    def __init__(self, cards: Optional[List[CreditCard]] = None):
-        self.cards = cards if cards is not None else CREDIT_CARDS
+    def __init__(
+        self,
+        cards: Optional[List[CreditCard]] = None,
+        config: Optional[DynamicConfigManager] = None,
+    ):
+        self.config = config if config is not None else dynamic_config
+        self.cards = [
+            CreditCard(
+                name=c.name,
+                due_day=c.due_day,
+                cutoff_day=c.cutoff_day,
+                balance=c.balance,
+                no_interest_payment=c.no_interest_payment,
+                minimum_payment=c.minimum_payment,
+                cat_rate=c.cat_rate,
+            )
+            for c in (cards if cards is not None else self.config.cards)
+        ]
         self.expenses: List[ExpenseRecord] = []
+
 
     def get_portfolio_summary(self) -> Dict[str, float]:
         """Calculates total debt, required monthly payments, and coverage ratios."""
@@ -50,9 +69,14 @@ class FinanceManager:
         total_no_interest = sum(c.no_interest_payment for c in self.cards)
         total_minimum = sum(c.minimum_payment for c in self.cards)
 
-        monthly_income = BIWEEKLY_INCOME * 2
-        monthly_opex = BIWEEKLY_BAC_OPEX * 2
+        monthly_income = self.config.income * 2
+        monthly_opex = self.config.bac_opex * 2
         monthly_free_cashflow = monthly_income - monthly_opex
+        coverage_ratio = (
+            round(monthly_free_cashflow / total_no_interest, 2)
+            if total_no_interest > 0
+            else 1.0
+        )
 
         return {
             "total_debt_balance": round(total_balance, 2),
@@ -61,7 +85,7 @@ class FinanceManager:
             "monthly_income": round(monthly_income, 2),
             "monthly_opex_bac": round(monthly_opex, 2),
             "monthly_free_cashflow": round(monthly_free_cashflow, 2),
-            "debt_coverage_ratio": round(monthly_free_cashflow / total_no_interest, 2),
+            "debt_coverage_ratio": coverage_ratio,
             "interest_paid_rate": 0.0,  # 0% Target Win Condition
         }
 
@@ -79,11 +103,11 @@ class FinanceManager:
         return {
             "quincena_1": {
                 "period": "Día 1 al 15 (Vencimientos día 5 al 9)",
-                "allocated_payroll": BIWEEKLY_INCOME,
-                "bac_opex": BIWEEKLY_BAC_OPEX,
-                "liquidity_buffer": BIWEEKLY_LIQUIDITY_BUFFER,
+                "allocated_payroll": self.config.income,
+                "bac_opex": self.config.bac_opex,
+                "liquidity_buffer": self.config.liquidity_buffer,
                 "total_no_interest_required": round(q1_total, 2),
-                "is_covered": BIWEEKLY_BAC_OPEX >= q1_total,
+                "is_covered": self.config.bac_opex >= q1_total,
                 "cards": [
                     {
                         "name": c.name,
@@ -96,11 +120,11 @@ class FinanceManager:
             },
             "quincena_2": {
                 "period": "Día 16 al fin de mes (Vencimientos día 16 al 26)",
-                "allocated_payroll": BIWEEKLY_INCOME,
-                "bac_opex": BIWEEKLY_BAC_OPEX,
-                "liquidity_buffer": BIWEEKLY_LIQUIDITY_BUFFER,
+                "allocated_payroll": self.config.income,
+                "bac_opex": self.config.bac_opex,
+                "liquidity_buffer": self.config.liquidity_buffer,
                 "total_no_interest_required": round(q2_total, 2),
-                "is_covered": BIWEEKLY_BAC_OPEX >= q2_total,
+                "is_covered": self.config.bac_opex >= q2_total,
                 "cards": [
                     {
                         "name": c.name,
@@ -123,7 +147,7 @@ class FinanceManager:
     ) -> Dict[str, any]:
         """
         Registers an operational or discretionary expense.
-        Monitors R-04 risk: Discretionary expenses exceeding $300 MXN/day.
+        Monitors R-04 risk: Discretionary expenses exceeding daily cap.
         """
         expense = ExpenseRecord(
             description=description,
@@ -141,20 +165,22 @@ class FinanceManager:
             if e.category == "discretionary" and e.day_of_month == day_of_month
         )
 
-        exceeds_cap = daily_discretionary > DAILY_DISCRETIONARY_CAP
+        cap = self.config.discretionary_cap
+        exceeds_cap = daily_discretionary > cap
         alert_msg = None
         if exceeds_cap:
-            overflow = daily_discretionary - DAILY_DISCRETIONARY_CAP
+            overflow = daily_discretionary - cap
             alert_msg = (
                 f"ALERTA RIESGO R-04: Gasto discrecional acumulado en el día {day_of_month} "
-                f"(${daily_discretionary:.2f} MXN) supera el tope diario de ${DAILY_DISCRETIONARY_CAP:.2f} MXN "
+                f"(${daily_discretionary:.2f} MXN) supera el tope diario de ${cap:.2f} MXN "
                 f"en ${overflow:.2f} MXN. Requiere ajuste compensatorio en rubros variables."
             )
 
         return {
             "registered_expense": expense,
             "daily_discretionary_total": round(daily_discretionary, 2),
-            "daily_cap": DAILY_DISCRETIONARY_CAP,
+            "daily_cap": cap,
             "exceeds_cap": exceeds_cap,
             "alert": alert_msg,
         }
+

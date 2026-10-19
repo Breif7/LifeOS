@@ -9,3 +9,5 @@ venv/
 dist/
 build/
 .env
+lifeos_state.json
+service_account*.json

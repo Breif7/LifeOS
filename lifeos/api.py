@@ -16,6 +16,7 @@ from lifeos.config import (
     WBS_CATALOG,
 )
 from lifeos.cpm_pert import CPMNetwork
+from lifeos.dynamic_config import dynamic_config
 from lifeos.evm_predictor import EVMTracker
 from lifeos.finance_manager import FinanceManager
 from lifeos.forge3d import Forge3DEngine
@@ -31,13 +32,27 @@ app = FastAPI(
 cpm_engine = CPMNetwork()
 nlp_engine = LifeOSNLPClassifier()
 evm_tracker = EVMTracker()
-finance_mgr = FinanceManager()
+finance_mgr = FinanceManager(config=dynamic_config)
 forge3d_engine = Forge3DEngine()
 
 
 # --- Pydantic Request/Response Models ---
+class UpdateCardRequest(BaseModel):
+    balance: Optional[float] = None
+    no_interest_payment: Optional[float] = None
+    minimum_payment: Optional[float] = None
+    due_day: Optional[int] = None
+
+
+class UpdateBaselineRequest(BaseModel):
+    income: Optional[float] = None
+    bac_opex: Optional[float] = None
+    discretionary_cap: Optional[float] = None
+
+
 class NLPClassifyRequest(BaseModel):
     text: str = Field(..., json_schema_extra={"example": "Apartar $4,208 MXN para liquidar pago para no generar intereses de AMEX antes del día 9"})
+
 
 
 class MonteCarloRequest(BaseModel):
@@ -211,3 +226,74 @@ def get_risk_register():
         }
         for r in RISK_CATALOG
     ]
+
+
+# --- Dynamic Configuration & Real-Time Sync Endpoints ---
+@app.post("/config/sync-sheets")
+def sync_config_from_sheets():
+    """Triggers live synchronization with user's Google Sheets."""
+    try:
+        success = dynamic_config.sync_from_google_sheets()
+        return {
+            "status": "SUCCESS" if success else "FAILED",
+            "last_sync": dynamic_config.last_sync,
+            "sync_source": dynamic_config.sync_source,
+            "summary": dynamic_config.get_summary(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Google Sheets sync failed: {str(e)}")
+
+
+@app.get("/config/live")
+def get_live_config():
+    """Returns the current dynamic financial and operational baseline."""
+    return dynamic_config.get_summary()
+
+
+@app.get("/config/cards")
+def get_live_cards():
+    """Returns all current credit cards with dynamic balances and deadlines."""
+    return [
+        {
+            "name": c.name,
+            "due_day": c.due_day,
+            "cutoff_day": c.cutoff_day,
+            "balance": c.balance,
+            "no_interest_payment": c.no_interest_payment,
+            "minimum_payment": c.minimum_payment,
+            "cat_rate": c.cat_rate,
+        }
+        for c in dynamic_config.cards
+    ]
+
+
+@app.put("/config/cards/{card_name}")
+def update_live_card(card_name: str, req: UpdateCardRequest):
+    """Updates or inserts a credit card's balance/deadline dynamically."""
+    updated = dynamic_config.update_card(
+        name=card_name,
+        balance=req.balance,
+        no_interest_payment=req.no_interest_payment,
+        minimum_payment=req.minimum_payment,
+        due_day=req.due_day,
+    )
+    return {
+        "status": "UPDATED",
+        "card_name": card_name,
+        "summary": dynamic_config.get_summary(),
+    }
+
+
+@app.put("/config/baseline")
+def update_live_baseline(req: UpdateBaselineRequest):
+    """Updates biweekly income, OpEx BAC, or daily discretionary cap dynamically."""
+    dynamic_config.set_financial_baseline(
+        income=req.income,
+        bac_opex=req.bac_opex,
+        discretionary_cap=req.discretionary_cap,
+    )
+    return {
+        "status": "UPDATED",
+        "summary": dynamic_config.get_summary(),
+    }
+
