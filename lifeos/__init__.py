@@ -19,6 +19,7 @@ from lifeos.nlp_classifier import (
     NumpyTfidfSoftmaxClassifier,
     SublinearTfidfVectorizer,
 )
+from lifeos.sheets_sync import GoogleSheetsSync
 
 __version__ = "1.0.0"
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "PolynomialRidgeRegressor",
     "FinanceManager",
     "Forge3DEngine",
+    "GoogleSheetsSync",
     "WBS_CATALOG",
     "CREDIT_CARDS",
     "RISK_CATALOG",
